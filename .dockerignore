@@ -1,0 +1,17 @@
+.git
+.gitignore
+.idea
+.vscode
+*.md
+.env
+.docker
+node_modules
+vendor
+storage/logs/*
+storage/framework/cache/*
+storage/framework/sessions/*
+storage/framework/views/*
+bootstrap/cache/*
+.phpunit.cache
+coverage
+.DS_Store

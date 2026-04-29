@@ -1,0 +1,201 @@
+<?php
+
+namespace App\Providers;
+
+use App\Events\BoletoGenerated;
+use App\Events\OrderCompleted;
+use App\Events\PixGenerated;
+use App\Listeners\CreditTenantWalletOnOrderCompleted;
+use App\Listeners\SendAccessEmailOnOrderCompleted;
+use App\Listeners\SendPanelPushOnBoletoGenerated;
+use App\Listeners\SendPanelPushOnOrderCompleted;
+use App\Listeners\SendPanelPushOnPixGenerated;
+use App\Listeners\CademiEventSubscriber;
+use App\Listeners\SpedyEventSubscriber;
+use App\Listeners\UtmifyEventSubscriber;
+use App\Listeners\SendApiApplicationWebhookListener;
+use App\Listeners\WebhookEventSubscriber;
+use App\Support\DockerSetupState;
+use App\Services\BrandingEmailData;
+use Illuminate\Auth\Notifications\ResetPassword;
+use Illuminate\Cache\RateLimiting\Limit;
+use Illuminate\Http\Request;
+use Illuminate\Notifications\Messages\MailMessage;
+use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\Event;
+use Illuminate\Support\Facades\RateLimiter;
+use Illuminate\Support\Facades\Queue;
+use Illuminate\Support\Facades\Redis;
+use Illuminate\Support\ServiceProvider;
+
+class AppServiceProvider extends ServiceProvider
+{
+    /**
+     * Register any application services.
+     */
+    public function register(): void
+    {
+        // Reforço: UrlGenerator exige Request; se algo resolveu url antes de SetRequestForConsole,
+        // bootstrap/app.php já liga um request — aqui cobrimos request ausente ou inválido.
+        if ($this->app->runningInConsole()) {
+            $existing = null;
+            try {
+                $existing = $this->app->bound('request') ? $this->app->make('request') : null;
+            } catch (\Throwable) {
+                $existing = null;
+            }
+            if ($existing instanceof Request) {
+                return;
+            }
+            $base = 'http://localhost';
+            try {
+                $base = (string) $this->app->make('config')->get('app.url', $base);
+            } catch (\Throwable) {
+                $base = (string) (getenv('APP_URL') ?: getenv('GETFY_APP_URL') ?: $base);
+            }
+            $base = $base !== '' ? rtrim($base, '/') : 'http://localhost';
+            $this->app->instance('request', Request::create($base.'/', 'GET'));
+        }
+    }
+
+    /**
+     * Bootstrap any application services.
+     */
+    public function boot(): void
+    {
+        $this->ensureRuntimeDirectories();
+        $this->fallbackRedisToDatabase();
+        $this->fallbackInvalidQueueConnectionToSync();
+        $this->bootCloudFolder();
+        if (DockerSetupState::isDocker() && class_exists(\Illuminate\Support\Facades\Vite::class)) {
+            \Illuminate\Support\Facades\Vite::useHotFile(storage_path('framework/vite.hot'));
+        }
+
+        RateLimiter::for('api', function (Request $request) {
+            return Limit::perMinute(60)->by($request->user()?->id ?: $request->ip());
+        });
+
+        Queue::after(function (): void {
+            Cache::put('queue_heartbeat', now()->toIso8601String(), now()->addMinutes(5));
+        });
+
+        Event::listen(OrderCompleted::class, CreditTenantWalletOnOrderCompleted::class);
+        Event::listen(OrderCompleted::class, SendAccessEmailOnOrderCompleted::class);
+        Event::listen(OrderCompleted::class, SendPanelPushOnOrderCompleted::class);
+        Event::listen(PixGenerated::class, SendPanelPushOnPixGenerated::class);
+        Event::listen(BoletoGenerated::class, SendPanelPushOnBoletoGenerated::class);
+        Event::subscribe(WebhookEventSubscriber::class);
+        Event::subscribe(SendApiApplicationWebhookListener::class);
+        Event::subscribe(UtmifyEventSubscriber::class);
+        Event::subscribe(SpedyEventSubscriber::class);
+        Event::subscribe(CademiEventSubscriber::class);
+
+        ResetPassword::toMailUsing(function (object $notifiable, string $token) {
+            $tenantId = property_exists($notifiable, 'tenant_id') ? ($notifiable->tenant_id ?? null) : null;
+            $logoUrl = BrandingEmailData::forTenant(is_int($tenantId) ? $tenantId : null)['logo_url'] ?? null;
+            $email = $notifiable->getEmailForPasswordReset();
+            $redirect = app()->bound('password_reset_redirect') ? app('password_reset_redirect') : null;
+            $query = ['email' => $email];
+            if ($redirect !== null) {
+                $query['redirect'] = $redirect;
+            }
+            $base = rtrim((string) config('app.url'), '/');
+            $url = $base.'/redefinir-senha/'.rawurlencode($token).'?'.http_build_query($query);
+            $expire = config('auth.passwords.'.config('auth.defaults.passwords').'.expire');
+
+            return (new MailMessage)
+                ->markdown('notifications::email', ['logoUrl' => $logoUrl])
+                ->subject('Redefinição de senha')
+                ->greeting('Olá!')
+                ->line('Você está recebendo este e-mail porque recebemos uma solicitação de redefinição de senha da sua conta.')
+                ->action('Redefinir senha', $url)
+                ->line('Este link expira em '.$expire.' minutos.')
+                ->line('Se você não solicitou a redefinição de senha, nenhuma ação é necessária.');
+        });
+    }
+
+    private function bootCloudFolder(): void
+    {
+        if (! is_dir(base_path('cloud'))) {
+            return;
+        }
+
+        $bootstrap = base_path('cloud/bootstrap.php');
+        if (! is_file($bootstrap)) {
+            return;
+        }
+
+        try {
+            $register = require $bootstrap;
+            if (is_callable($register)) {
+                $register($this->app);
+            }
+        } catch (\Throwable $e) {
+            report($e);
+        }
+    }
+
+    private function ensureRuntimeDirectories(): void
+    {
+        static $done = false;
+        if ($done) {
+            return;
+        }
+        $done = true;
+
+        $paths = [
+            storage_path('framework/cache/data'),
+            storage_path('framework/sessions'),
+            storage_path('framework/views'),
+            storage_path('logs'),
+            base_path('bootstrap/cache'),
+        ];
+
+        foreach ($paths as $path) {
+            if (! is_dir($path)) {
+                @mkdir($path, 0755, true);
+            }
+        }
+    }
+
+    /**
+     * Se Redis estiver configurado mas indisponível, usa database para cache, sessão e fila.
+     */
+    private function fallbackRedisToDatabase(): void
+    {
+        $usesRedis = config('cache.default') === 'redis'
+            || config('session.driver') === 'redis'
+            || config('queue.default') === 'redis';
+
+        if (! $usesRedis) {
+            return;
+        }
+
+        try {
+            Redis::connection()->ping();
+        } catch (\Throwable $e) {
+            if (config('cache.default') === 'redis') {
+                config(['cache.default' => 'database']);
+            }
+            if (config('session.driver') === 'redis') {
+                config(['session.driver' => 'database']);
+            }
+            if (config('queue.default') === 'redis') {
+                config(['queue.default' => 'database']);
+            }
+        }
+    }
+
+    private function fallbackInvalidQueueConnectionToSync(): void
+    {
+        $default = (string) config('queue.default', 'sync');
+        $connections = config('queue.connections', []);
+        if (! is_array($connections) || $connections === []) {
+            config(['queue.default' => 'sync']);
+            return;
+        }
+        if (! array_key_exists($default, $connections)) {
+            config(['queue.default' => 'sync']);
+        }
+    }
+}
