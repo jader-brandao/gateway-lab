@@ -21,28 +21,30 @@ WORKDIR /var/www/html
 
 FROM php_base AS app
 
-# PHP-FPM escutando só local (Nginx acessa internamente)
+# PHP-FPM escutando localmente
 RUN sed -ri 's/^listen = .*/listen = 127.0.0.1:9000/' /usr/local/etc/php-fpm.d/www.conf
 
-# Nginx config
+# Config Nginx (mantém seu arquivo)
 COPY docker/nginx/default.conf /etc/nginx/sites-enabled/getfy.conf
-
-# 🔥 Corrigido: usar config principal do supervisord
-COPY docker/supervisor/supervisord.conf /etc/supervisor/supervisord.conf
 
 # App
 COPY . .
 
 # Entrypoint
 COPY docker/entrypoint.sh /usr/local/bin/getfy-entrypoint
+RUN chmod +x /usr/local/bin/getfy-entrypoint
 
-RUN chmod +x /usr/local/bin/getfy-entrypoint \
-    && mkdir -p storage/framework/cache/data storage/framework/sessions storage/framework/views bootstrap/cache .docker \
+# Permissões Laravel
+RUN mkdir -p storage/framework/cache/data storage/framework/sessions storage/framework/views bootstrap/cache .docker \
     && chmod -R 777 storage bootstrap/cache .docker
+
+# 🔥 GARANTE supervisord funcionando (sem depender de arquivo externo)
+RUN mkdir -p /etc/supervisor
+
+RUN printf "[supervisord]\nnodaemon=true\n\n[program:php-fpm]\ncommand=docker-php-entrypoint php-fpm\nautostart=true\nautorestart=true\n\n[program:nginx]\ncommand=nginx -g 'daemon off;'\nautostart=true\nautorestart=true\n" > /etc/supervisor/supervisord.conf
 
 EXPOSE 80
 
 ENTRYPOINT ["/usr/local/bin/getfy-entrypoint"]
 
-# 🔥 Corrigido: apontar config do supervisord
 CMD ["/usr/bin/supervisord", "-c", "/etc/supervisor/supervisord.conf", "-n"]
