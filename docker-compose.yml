@@ -37,7 +37,7 @@ services:
       QUEUE_CONNECTION: ${GETFY_QUEUE_CONNECTION:-redis}
       SESSION_DRIVER: ${GETFY_SESSION_DRIVER:-file}
       GETFY_DOCKER: "true"
-      GETFY_RUN_SETUP: "true"
+      GETFY_RUN_SETUP: "false"
     depends_on:
       postgres:
         condition: service_healthy
@@ -45,7 +45,8 @@ services:
         condition: service_healthy
     # Sem variáveis $x — o Compose interpola $ no YAML e quebra o script PHP (WARN "The s variable is not set").
     healthcheck:
-      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:80/up >/dev/null || exit 1"]
+      test:
+        ["CMD-SHELL", "curl -fsS http://127.0.0.1:80/up >/dev/null || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 15
@@ -61,7 +62,7 @@ services:
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\""]
+      test: ["CMD-SHELL", 'pg_isready -U "$$POSTGRES_USER" -d "$$POSTGRES_DB"']
       interval: 5s
       timeout: 3s
       retries: 30
