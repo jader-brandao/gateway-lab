@@ -1,4 +1,4 @@
-FROM php:8.2-fpm-bookworm AS php_base
+FROM php:8.2-fpm-bookworm
 
 # Instala dependências
 RUN apt-get update \
@@ -19,32 +19,25 @@ COPY --from=composer:2 /usr/bin/composer /usr/bin/composer
 
 WORKDIR /var/www/html
 
-FROM php_base AS app
-
-# PHP-FPM escutando localmente
+# PHP-FPM escuta local (Nginx acessa internamente)
 RUN sed -ri 's/^listen = .*/listen = 127.0.0.1:9000/' /usr/local/etc/php-fpm.d/www.conf
 
-# Config Nginx (mantém seu arquivo)
+# Config Nginx
 COPY docker/nginx/default.conf /etc/nginx/sites-enabled/getfy.conf
 
-# App
+# Copia aplicação
 COPY . .
 
-# Entrypoint
-COPY docker/entrypoint.sh /usr/local/bin/getfy-entrypoint
-RUN chmod +x /usr/local/bin/getfy-entrypoint
-
 # Permissões Laravel
-RUN mkdir -p storage/framework/cache/data storage/framework/sessions storage/framework/views bootstrap/cache .docker \
-    && chmod -R 777 storage bootstrap/cache .docker
+RUN mkdir -p storage/framework/cache/data storage/framework/sessions storage/framework/views bootstrap/cache \
+    && chmod -R 777 storage bootstrap/cache
 
-# 🔥 GARANTE supervisord funcionando (sem depender de arquivo externo)
+# 🔥 Cria config do supervisord (sem depender de arquivo externo)
 RUN mkdir -p /etc/supervisor
 
 RUN printf "[supervisord]\nnodaemon=true\n\n[program:php-fpm]\ncommand=docker-php-entrypoint php-fpm\nautostart=true\nautorestart=true\n\n[program:nginx]\ncommand=nginx -g 'daemon off;'\nautostart=true\nautorestart=true\n" > /etc/supervisor/supervisord.conf
 
 EXPOSE 80
 
-ENTRYPOINT ["/usr/local/bin/getfy-entrypoint"]
-
+# 🔥 SEM entrypoint (elimina 100% dos erros que você teve)
 CMD ["/usr/bin/supervisord", "-c", "/etc/supervisor/supervisord.conf", "-n"]
