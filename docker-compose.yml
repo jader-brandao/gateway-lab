@@ -101,11 +101,11 @@ services:
       APP_INSTALLED: ${GETFY_APP_INSTALLED:-true}
       APP_AUTO_MIGRATE: ${GETFY_APP_AUTO_MIGRATE:-false}
       DB_CONNECTION: ${GETFY_DB_CONNECTION:-pgsql}
-      DB_HOST: ${GETFY_DB_HOST:-postgres}
-      DB_PORT: ${GETFY_DB_PORT:-5432}
-      DB_DATABASE: ${GETFY_DB_DATABASE:-getfy}
-      DB_USERNAME: ${GETFY_DB_USERNAME:-getfy}
-      DB_PASSWORD: ${GETFY_DB_PASSWORD:-getfy}
+      DB_HOST: pgsql.winfy.com.br
+      DB_PORT: 5432
+      DB_DATABASE: winfy
+      DB_USERNAME: winfy
+      DB_PASSWORD: winfy026
       REDIS_HOST: ${GETFY_REDIS_HOST:-redis}
       REDIS_PORT: ${GETFY_REDIS_PORT:-6379}
       CACHE_STORE: ${GETFY_CACHE_STORE:-redis}
