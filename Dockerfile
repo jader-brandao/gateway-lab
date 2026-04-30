@@ -1,6 +1,6 @@
 FROM php:8.2-fpm-bookworm AS php_base
 
-# Debian Bookworm: nginx + extensões alinhadas ao PHP da imagem oficial.
+# Instala dependências
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         curl ca-certificates git unzip nginx supervisor \
@@ -14,19 +14,26 @@ RUN apt-get update \
     && rm -f /etc/nginx/sites-enabled/default \
     && rm -rf /var/lib/apt/lists/*
 
+# Composer
 COPY --from=composer:2 /usr/bin/composer /usr/bin/composer
 
 WORKDIR /var/www/html
 
 FROM php_base AS app
 
-# FPM só em loopback — Nginx no mesmo container.
+# PHP-FPM escutando só local (Nginx acessa internamente)
 RUN sed -ri 's/^listen = .*/listen = 127.0.0.1:9000/' /usr/local/etc/php-fpm.d/www.conf
 
+# Nginx config
 COPY docker/nginx/default.conf /etc/nginx/sites-enabled/getfy.conf
-COPY docker/supervisor/supervisord.conf /etc/supervisor/conf.d/getfy.conf
 
+# 🔥 Corrigido: usar config principal do supervisord
+COPY docker/supervisor/supervisord.conf /etc/supervisor/supervisord.conf
+
+# App
 COPY . .
+
+# Entrypoint
 COPY docker/entrypoint.sh /usr/local/bin/getfy-entrypoint
 
 RUN chmod +x /usr/local/bin/getfy-entrypoint \
@@ -36,4 +43,6 @@ RUN chmod +x /usr/local/bin/getfy-entrypoint \
 EXPOSE 80
 
 ENTRYPOINT ["/usr/local/bin/getfy-entrypoint"]
-CMD ["/usr/bin/supervisord", "-n"]
+
+# 🔥 Corrigido: apontar config do supervisord
+CMD ["/usr/bin/supervisord", "-c", "/etc/supervisor/supervisord.conf", "-n"]
